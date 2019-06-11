@@ -177,6 +177,10 @@ class AirBackBone:
 		self.resnet_M = None
 		self.classes = 1000
 		self.model = None
+		self.flight = None
+		self.flightCode = None
+		self.xmlPath = None
+		self.horLocDir = None
 
 	def CreateResnet(self):
 		self.resnet_M = ResNet18((512, 512, 3), weights='imagenet', classes = 1000)
@@ -297,17 +301,8 @@ class AirBackBone:
 			json.dump(gt, outfile)
 		print(len(set(loc)))'''
 
-	def processDataXml(self):
-		horPos = []
-		gt_Tag = []
-		driver = gdal.GetDriverByName('GTiff')
-		dataset = gdal.Open('/home/ghost/Downloads/metashape_1_5_2_amd64/metashape/photos/2018_0606_flight1_1045.tif')
-		img  = cv2.imread('/home/ghost/Downloads/metashape_1_5_2_amd64/metashape/photos/2018_0606_flight1_1045.tif')
-		hors = xlrd.open_workbook("/media/ghost/DATA/Material/AirHorse Identification/Airbus/position_horse_WGS84.xlsx")
-		band = dataset.GetRasterBand(1)
-		cols = dataset.RasterXSize
-		rows = dataset.RasterYSize
-		transform = dataset.GetGeoTransform()	
+	def dataProcessor(self):	
+
 		def isRotationMatrix(R) :
 			Rt = np.transpose(R)
 			shouldBeIdentity = np.dot(Rt, R)
@@ -315,50 +310,93 @@ class AirBackBone:
 			I = np.identity(3, dtype = R.dtype)
 			n = np.linalg.norm(I - shouldBeIdentity)
 			return n < 1e-6
-		#assert(isRotationMatrix(np.array(R)[0:3,0:3]))
-		horSheet = hors.sheet_by_index(0) 
+
 		def prepareGtTags():	
 			for hor in range(horSheet.nrows):
 				print('[{}] '.format(hor)+'........................................', end = '')
 				horPos.append([horSheet.row_values(hor)[3], horSheet.row_values(hor)[4]])
 				gt_Tag.append(horSheet.row_values(hor)[0])
-				np.savez_compressed('/media/ghost/DATA/Material/AirHorse Identification/Airbus/gt/'+str(horSheet.row_values(hor)[1]), gt_Tag = gt_Tag, horPos = horPos)
+				np.savez_compressed(horseLocDir +str(horSheet.row_values(hor)[1]), gt_Tag = gt_Tag, horPos = horPos)
 				print('done')
+
+
+		def listTif():
+			tifs = []
+			for root, dirs, files in os.walk("/mydir"):
+				for file in files:
+					if file.endswith(".tif"):
+						tifs.append(file)
+
+			return tifs
+
+		def flight2Code(self):
+			if flight[17] == '_':
+				self.flightCode = self.flight[6: 8] + '0' + self.flight[16]
+			else
+				self.flightCode = self.flight[6: 8] + self.flight[16]
+
+		horPos = []
+		gt_Tag = []
+		driver = gdal.GetDriverByName('GTiff')
+		dataset = gdal.Open('/home/ghost/Downloads/metashape_1_5_2_amd64/metashape/photos/2018_0606_flight1_1045.tif')
+		hors = xlrd.open_workbook("/media/ghost/DATA/Material/AirHorse Identification/Airbus/position_horse_WGS84.xlsx")
+		band = dataset.GetRasterBand(1)
+		cols = dataset.RasterXSize
+		rows = dataset.RasterYSize
+		transform = dataset.GetGeoTransform()
+
+		#assert(isRotationMatrix(np.array(R)[0:3,0:3]))
+		horSheet = hors.sheet_by_index(0) 
+
 		xOrigin = transform[0]
 		yOrigin = transform[3]
 		pixelWidth = transform[1]
 		pixelHeight = -transform[5]
 		data = band.ReadAsArray(0, 0, cols, rows)
-		tree = ET.parse('2018_0606_flight1_1045.xml')  
-		root = tree.getroot()
-		horses = np.load('/media/ghost/DATA/Material/AirHorse Identification/Airbus/gt/'+str(60601)+'.npz')
-		for center in range(len(root[0][1])):
-			print('[{}] '.format(center)+' .... ', end = '')
-			imagCenGpsX = float(root[0][1][center][2].attrib['x'])
-			imagCenGpsY = float(root[0][1][center][2].attrib['y'])
-			imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
-			imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
-			#Transformation = (root[0][1][center][0].text)
-			#Transformation = [(float(matrix)) for matrix in Transformation.split()]
-			#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
-			#scale, shear, angle, translate, pros = (decompose_matrix(Transformation_Inv))
-			#rotation_matrix = cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1)
-			#print(cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[1]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[2]), 1))
-			#rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[0], img.shape[1]))
-			#imagCenPixX = int(imagCenPixX - translate[0])
-			#imagCenPixY = int(imagCenPixY - translate[1])
-			crop = img[imagCenPixY -self.img_H: imagCenPixY + self.img_H, imagCenPixX-self.img_W: imagCenPixX+self.img_W]
-			for horse in range(1, len(horses['gt_Tag'])):
-				horseGpsX = float(horses['horPos'][horse][0])
-				horseGpsY = float(horses['horPos'][horse][1])
-				horsePixX = int((horseGpsX - xOrigin) / pixelWidth)
-				horsePixY = int((yOrigin - horseGpsY) / pixelHeight)
-				horseImgX = horsePixX - (imagCenPixX - self.img_W)
-				horseImgY = horsePixY - (imagCenPixY - self.img_H)
-				if horseImgX < 2*1024 and horseImgY < 2*1024 and horseImgX > 0 and horseImgY > 0:
-					cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
-					np.savez_compressed('/media/ghost/DATA/Material/AirHorse Identification/Airbus/gt_Pos/'+str(horse), horseCoordinate = [horseImgX, horseImgY])
-			cv2.imwrite("/media/ghost/DATA/Material/AirHorse Identification/Airbus/newData/" + str(center) + ".jpg", crop)
+		tifs = listTif()
+		count = 0
+		for tif in tifs:
+			print('[{}] '.format(count)+' .... ', end = '')
+			tifName = tif.split('/')[-1][:-4]
+			print(tifName)
+			img  = cv2.imread(tif)
+			tree = ET.parse(self.xmlPath + tifName + '.xml')  
+			flight2Code()
+			root = tree.getroot()
+			horses = np.load(horseLocDir + flightCode +'.npz')
+			for center in range(len(root[0][1])):
+				print('[{}] '.format(center)+' .... ', end = '')
+				imagCenGpsX = float(root[0][1][center][2].attrib['x'])
+				imagCenGpsY = float(root[0][1][center][2].attrib['y'])
+				imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
+				imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
+				#Transformation = (root[0][1][center][0].text)
+				#Transformation = [(float(matrix)) for matrix in Transformation.split()]
+				#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
+				#scale, shear, angle, translate, pros = (decompose_matrix(Transformation_Inv))
+				#rotation_matrix = cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1)
+				#print(cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[1]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[2]), 1))
+				#rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[0], img.shape[1]))
+				#imagCenPixX = int(imagCenPixX - translate[0])
+				#imagCenPixY = int(imagCenPixY - translate[1])
+				crop = img[imagCenPixY -self.img_H: imagCenPixY + self.img_H, imagCenPixX-self.img_W: imagCenPixX+self.img_W]
+				horseFlag = np.zeros((len(horses['gt_Tag']), 1), dtype='bool')
+				for horse in range(1, len(horses['gt_Tag'])):
+					horseGpsX = float(horses['horPos'][horse][0])
+					horseGpsY = float(horses['horPos'][horse][1])
+					horsePixX = int((horseGpsX - xOrigin) / pixelWidth)
+					horsePixY = int((yOrigin - horseGpsY) / pixelHeight)
+					horseImgX = horsePixX - (imagCenPixX - self.img_W)
+					horseImgY = horsePixY - (imagCenPixY - self.img_H)
+					if horseImgX < 2*self.imgY_W and horseImgY < 2*self.img_H and horseImgX > 0 and horseImgY > 0:
+						cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
+						horseFlag[horse] = 1
+						np.savez_compressed('/media/ghost/DATA/Material/AirHorse Identification/Airbus/gt_Pos/'+str(horse), horseCoordinate = [horseImgX, horseImgY])
+					while(np.count_nonzero(horseFlag)):
+						
+				cv2.imwrite("/media/ghost/DATA/Material/AirHorse Identification/Airbus/newData/" + str(center) + ".jpg", crop)
+				print('done')
+			count = count + 1
 			print('done')
 
 	def loadData(self):
