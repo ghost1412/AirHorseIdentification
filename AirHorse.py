@@ -5,8 +5,10 @@ import xlrd
 import uuid
 import numpy
 import os
+import pandas as pd
 import numpy as np
 import scipy.linalg
+from tqdm import tqdm, trange
 from skimage.io import imread, imsave
 from keras.models import Model
 import xml.etree.ElementTree as ET  
@@ -343,22 +345,23 @@ class AirBackBone:
 			return n < 1e-6
 
 		def prepareGtTags():	
-			hors = xlrd.open_workbook(
+			df = pd.read_excel(
 				self.Datapath + 'Horse_photo/position_horse_WGS84.xlsx'
 			)
-			horSheet = hors.sheet_by_index(0) 
-			for hor in range(horSheet.nrows):
-				print('[{}] '.format(hor)+'........................................', end = '')
-				horPos.append(
-					[horSheet.row_values(hor)[3], horSheet.row_values(hor)[4]]
-				)
-				gt_Tag.append(horSheet.row_values(hor)[0])
+			df = np.array(df.astype(str).groupby('code').agg(','.join).reset_index())
+			print("Preparing Horse Positions")
+			for flight in trange(len(df)):
+				#print('[{}] '.format(hor)+'........................................', end = '')
+				#print(str(int(horSheet.row_values(hor)[1])))
+				horsX = [(float(hor)) for hor in df[flight][3].split(',')]
+				horsY = [(float(hor)) for hor in df[flight][4].split(',')]
+				tag = [(str(hor)) for hor in df[flight][1].split(',')]
+				#print('done')
 				np.savez_compressed(
-					self.horLocDir + str(horSheet.row_values(hor)[1]),
-					gt_Tag = gt_Tag,
-					horPos = horPos
+					self.horLocDir + df[flight][0],
+					gt_Tag = tag,
+					horPos = [horsX, horsY]
 				)
-				print('done')
 
 		def listTif():
 			tifs = []
@@ -374,30 +377,34 @@ class AirBackBone:
 
 		def flight2Code():
 			if self.flightName[17] == '_':
-				self.flightCode = self.flightName[6: 8] + '0' + self.flightName[16]
+				self.flightCode = self.flightName[6: 9] + '0' + self.flightName[16]
 			else:
-				self.flightCode = self.flightName[6: 8] + self.flightName[16]
-
-		horPos = []
-		gt_Tag = []
+				self.flightCode = self.flightName[6: 9] + self.flightName[16:18]
 
 		#assert(isRotationMatrix(np.array(R)[0:3,0:3]))
-		listTif()
+		#listTif()
+
 		with open(
 			self.Datapath + 'Horse/ProcessedData/TifData/tif.json'
 		) as f:
 			tifs = json.load(f)
-
 		count = 0
-
 		prepareGtTags()
-		horses = np.load(self.horLocDir + flightCode +'.npz')
-		print('Processing TIF files')
-		for tif in tifs:
+		exception = []
+		#print('***************| Processing TIF files |*********************')
+		for tif in tqdm(tifs):
+			tifs.remove(tif)
+			with open(
+				self.Datapath + 'Horse/ProcessedData/TifData/tif.json', 'w'
+			) as outfile:
+				json.dump(tifs, outfile)
+			with open(
+				self.Datapath + 'Horse/ProcessedData/state.json', 'w'
+			) as outfile:
+				json.dump(tifs, outfile)
 			self.flightName = tif.split('/')[-1][:-4]
 			if self.flightName[0] == '2':
-				print('[{}] '.format(count)+' ............... ', end = '')
-				print(self.flightName)
+				#print('[{}] '.format(count)+' ........................................... ', end = '')
 				driver = gdal.GetDriverByName('GTiff')
 				dataset = gdal.Open(tif)
 				band = dataset.GetRasterBand(1)
@@ -409,17 +416,36 @@ class AirBackBone:
 				pixelWidth = transform[1]
 				pixelHeight = -transform[5]
 				data = band.ReadAsArray(0, 0, cols, rows)
-				img  = imread(tif)
-				tree = ET.parse(self.xmlPath + self.flightName + '.xml')  
+				try:
+					img  = imread(tif, plugin='tifffile')
+					pass
+				except:
+					print('Exception')
+					exception.append(self.flightName)
+					continue
 				flight2Code()
+				horses = np.load(self.horLocDir + self.flightCode +'.npz') 
+				if self.flightName[-3] == '_':
+					self.flightName = self.flightName[0:27] + self.flightName[28:]	
+				try:	
+					tree = ET.parse(self.xmlPath + self.flightName + '.xml') 
+					pass
+				except: 
+					print('Exception')
+					exception.append(self.flightName)
+					continue
 				root = tree.getroot()
-				print('Processing Center in the TIF file')
-				for center in range(len(root[0][1])):
-					print('[{}] '.format(center)+' .... ', end = '')
+				#print('                     ******************| Processing Center in the TIF file |*******************')
+				for center in trange(0, len(root[0][1])):
+					#print('[{}] '.format(center)+'                      ........................................... ', end = '')
 					multiHorse = []
 					imagId = uuid.uuid4()
-					imagCenGpsX = float(root[0][1][center][2].attrib['x'])
-					imagCenGpsY = float(root[0][1][center][2].attrib['y'])
+					if len(root[0][1][center][1].attrib) == 4:
+						coordIndex = 1
+					else:
+						coordIndex = 2
+					imagCenGpsX = float(root[0][1][center][coordIndex].attrib['x'])
+					imagCenGpsY = float(root[0][1][center][coordIndex].attrib['y'])
 					imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
 					imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
 					#Transformation = (root[0][1][center][0].text)
@@ -427,53 +453,64 @@ class AirBackBone:
 					#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
 					#scale, shear, angle, translate, pros = (decompose_matrix(Transformation_Inv))
 					#rotation_matrix = cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1)
-					#print(cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[1]), 1), cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[2]), 1))
 					#rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[0], img.shape[1]))
 					#imagCenPixX = int(imagCenPixX - translate[0])
-					#imagCenPixY = int(imagCenPixY - translate[1])
+					if (imagCenPixX + self.img_W//2 > img.shape[1] 
+						or imagCenPixX - self.img_W//2 < 0
+						or imagCenPixY - self.img_H//2 < 0
+						or imagCenPixY + self.img_H//2 > img.shape[0]
+					):
+						continue
 					crop = img[
 						imagCenPixY - self.img_H//2: imagCenPixY + self.img_H//2,
-						imagCenPixX - self.img_W//2: imagCenPixX + self.img_W//2
+						imagCenPixX - self.img_W//2: imagCenPixX + self.img_W//2,
+						0:3
 					]
+
 					horseFlag = np.zeros((len(horses['gt_Tag']), 1), dtype='bool')
 
-					print('Processing Horses with respect to Center')
-					for horse in range(1, len(horses['gt_Tag'])):
-						print('[{}] '.format(horse)+' .... ', end = '')
-						horseGpsX = float(horses['horPos'][horse][0])
-						horseGpsY = float(horses['horPos'][horse][1])
+					#print('********************| Processing Horses with respect to Center |*******************')
+					for horse in trange(0, len(horses['gt_Tag'])):
+						#print('[{}] '.format(horse)+' ........................................... ', end = '')
+						horseGpsX = float(horses['horPos'][0][horse])
+						horseGpsY = float(horses['horPos'][1][horse])
 						horsePixX = int((horseGpsX - xOrigin) / pixelWidth)
 						horsePixY = int((yOrigin - horseGpsY) / pixelHeight)
 						horseImgX = horsePixX - (imagCenPixX - self.img_W//2)
 						horseImgY = horsePixY - (imagCenPixY - self.img_H//2)
 						if (
-							horseImgX < self.imgY_W
+							horseImgX < self.img_W
 							and horseImgY < self.img_H
 							and horseImgX > 0
 							and horseImgY > 0
 						):
-							cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
+							#cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
 							horseFlag[horse] = 1
 							multiHorse.append([horseImgX, horseImgY])
-						#while(np.count_nonzero(horseFlag)):
-						print('done')
-					np.savez_compressed(
-						self.Datapath
-						+ 'Horse/ProcessedData/gt_Pos/'
-						+ imagId,
-						horseCoordinates = multiHorse,
-					)
-							
-					cv2.imwrite(
-						self.Datapath
-						+ "Horse/ProcessedData/InputData/"
-						+ imagId
-						+ ".jpg",
-						crop,
-					)
-					print('done')
-				count = count + 1
-				print('done')
+							imsave(
+								self.Datapath
+								+ "Horse/ProcessedData/InputData/"
+								+ str(imagId)
+								+ ".jpg",
+								crop
+							)
+							#while(np.count_nonzero(horseFlag)):
+							np.savez_compressed(
+								self.Datapath
+								+ 'Horse/ProcessedData/gt_Pos/'
+								+ str(imagId),
+								horseCoordinates = multiHorse,
+							)
+
+						#print('done')
+					#print('done')
+				#count = count + 1
+				#print('done')
+
+		with open(
+			self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+		) as outfile:
+			json.dump(exception, outfile)
 
 	def loadData(self):
 		for filename in glob.glob(
@@ -492,5 +529,5 @@ class AirBackBone:
 		
 a = AirBackBone()
 #a.createModel()
-a.dataProcessor()
+a.dataProcessor()	
 #a.resnet_M.summary()
