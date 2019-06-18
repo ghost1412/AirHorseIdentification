@@ -365,15 +365,19 @@ class AirBackBone:
 
 		def listTif():
 			tifs = []
+			newTif = []
 			for root, dirs, files in os.walk('/root/sharedfolder/My Files/Public/ashutosh/' + 'Horse_photo/'):
 				for file in files:
 					if file.endswith(".tif"):
 						tifs.append(root + '/' + file)
+			for tif in tifs:
+				if tif.split('/')[-1][:-4][0] == '2':
+					newTif.append(tif)
 
 			with open(
 				self.Datapath + 'Horse/ProcessedData/TifData/tif.json', 'w'
 			) as outfile:
-				json.dump(tifs, outfile)
+				json.dump(newTif, outfile)
 
 		def flight2Code():
 			if self.flightName[17] == '_':
@@ -384,16 +388,19 @@ class AirBackBone:
 		#assert(isRotationMatrix(np.array(R)[0:3,0:3]))
 		#listTif()
 
+		#with open(
+		#	self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+		#) as outfile:
+		#	json.dump([], outfile)
+		count = 0
+		prepareGtTags()
 		with open(
-			self.Datapath + 'Horse/ProcessedData/TifData/tif.json'
+			self.Datapath + 'Horse/ProcessedData/state.json'
 		) as f:
 			tifs = json.load(f)
 		count = 0
-		prepareGtTags()
-		exception = []
 		#print('***************| Processing TIF files |*********************')
 		for tif in tqdm(tifs):
-			tifs.remove(tif)
 			with open(
 				self.Datapath + 'Horse/ProcessedData/TifData/tif.json', 'w'
 			) as outfile:
@@ -403,114 +410,170 @@ class AirBackBone:
 			) as outfile:
 				json.dump(tifs, outfile)
 			self.flightName = tif.split('/')[-1][:-4]
-			if self.flightName[0] == '2':
-				#print('[{}] '.format(count)+' ........................................... ', end = '')
-				driver = gdal.GetDriverByName('GTiff')
-				dataset = gdal.Open(tif)
-				band = dataset.GetRasterBand(1)
-				cols = dataset.RasterXSize
-				rows = dataset.RasterYSize
-				transform = dataset.GetGeoTransform()
-				xOrigin = transform[0]
-				yOrigin = transform[3]
-				pixelWidth = transform[1]
-				pixelHeight = -transform[5]
-				data = band.ReadAsArray(0, 0, cols, rows)
-				try:
-					img  = imread(tif, plugin='tifffile')
-					pass
-				except:
-					print('Exception')
-					exception.append(self.flightName)
-					continue
-				flight2Code()
+			#print('[{}] '.format(count)+' ........................................... ', end = '')
+			driver = gdal.GetDriverByName('GTiff')
+			dataset = gdal.Open(tif)
+			band = dataset.GetRasterBand(1)
+			cols = dataset.RasterXSize
+			rows = dataset.RasterYSize
+			transform = dataset.GetGeoTransform()
+			xOrigin = transform[0]
+			yOrigin = transform[3]
+			pixelWidth = transform[1]
+			pixelHeight = -transform[5]
+			data = band.ReadAsArray(0, 0, cols, rows)
+			try:
+				img  = imread(tif, plugin='tifffile')
+				pass
+			except:
+				print('Exception too large tif')
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json'
+				) as f:
+					exception = json.load(f)
+				tifs.remove(tif)
+				exception.append(self.flightName)
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+				) as outfile:
+					json.dump(exception, outfile)
+				continue
+
+			flight2Code()
+			try:
 				horses = np.load(self.horLocDir + self.flightCode +'.npz') 
-				if self.flightName[-3] == '_':
-					self.flightName = self.flightName[0:27] + self.flightName[28:]	
-				try:	
-					tree = ET.parse(self.xmlPath + self.flightName + '.xml') 
-					pass
-				except: 
-					print('Exception')
-					exception.append(self.flightName)
-					continue
-				root = tree.getroot()
-				#print('                     ******************| Processing Center in the TIF file |*******************')
-				for center in trange(0, len(root[0][1])):
-					#print('[{}] '.format(center)+'                      ........................................... ', end = '')
-					multiHorse = []
-					imagId = uuid.uuid4()
+			except:
+				print('Exception too large tif')
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json'
+				) as f:
+					exception = json.load(f)
+					tifs.remove(tif)
+				exception.append(self.flightName)
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+				) as outfile:
+					json.dump(exception, outfile)
+				continue
+			horseFlag = np.zeros((len(horses['gt_Tag']), 1), dtype='bool')
+
+			if self.flightName[-3] == '_':
+				self.flightName = self.flightName[0:27] + self.flightName[28:]	
+
+			try:	
+				tree = ET.parse(self.xmlPath + self.flightName + '.xml') 
+				pass
+			except: 
+				print('Exception horse location not found')
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json'
+				) as f:
+					exception = json.load(f)
+				exception.append(self.flightName)
+				tifs.remove(tif)
+				with open(
+					self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+				) as outfile:
+					json.dump(exception, outfile)
+				continue
+
+			root = tree.getroot()
+
+			#print('                     ******************| Processing Center in the TIF file |*******************')
+			for center in trange(0, len(root[0][1])):
+				#print('[{}] '.format(center)+'                      ........................................... ', end = '')
+				multiHorse = []
+				imagId = uuid.uuid4()
+				try:
 					if len(root[0][1][center][1].attrib) == 4:
 						coordIndex = 1
 					else:
 						coordIndex = 2
+					pass
+				except:
+					continue
+				try:
 					imagCenGpsX = float(root[0][1][center][coordIndex].attrib['x'])
 					imagCenGpsY = float(root[0][1][center][coordIndex].attrib['y'])
-					imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
-					imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
-					#Transformation = (root[0][1][center][0].text)
-					#Transformation = [(float(matrix)) for matrix in Transformation.split()]
-					#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
-					#scale, shear, angle, translate, pros = (decompose_matrix(Transformation_Inv))
-					#rotation_matrix = cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1)
-					#rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[0], img.shape[1]))
-					#imagCenPixX = int(imagCenPixX - translate[0])
-					if (imagCenPixX + self.img_W//2 > img.shape[1] 
-						or imagCenPixX - self.img_W//2 < 0
-						or imagCenPixY - self.img_H//2 < 0
-						or imagCenPixY + self.img_H//2 > img.shape[0]
+					pass
+				except:
+					print('Exception horse location not found')
+					with open(
+						self.Datapath + 'Horse/ProcessedData/exception.json'
+					) as f:
+						exception = json.load(f)
+					exception.append(self.flightName)
+					with open(
+						self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
+					) as outfile:
+						json.dump(exception, outfile)
+					continue
+			
+				imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
+				imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
+				#Transformation = (root[0][1][center][0].text)
+				#Transformation = [(float(matrix)) for matrix in Transformation.split()]
+				#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
+				#scale, shear, angle, translate, pros = (decompose_matrix(Transformation_Inv))
+				#rotation_matrix = cv2.getRotationMatrix2D((imagCenPixX, imagCenPixY), math.degrees(angle[0]), 1)
+				#rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[0], img.shape[1]))
+				#imagCenPixX = int(imagCenPixX - translate[0])
+				if (imagCenPixX + self.img_W//2 > img.shape[1] 
+					or imagCenPixX - self.img_W//2 < 0
+					or imagCenPixY - self.img_H//2 < 0
+					or imagCenPixY + self.img_H//2 > img.shape[0]
+				):
+					continue
+				crop = img[
+					imagCenPixY - self.img_H//2: imagCenPixY + self.img_H//2,
+					imagCenPixX - self.img_W//2: imagCenPixX + self.img_W//2,
+					0:3
+				]
+
+				#print('********************| Processing Horses with respect to Center |*******************')
+				for horse in trange(0, len(horses['gt_Tag'])):
+					#print('[{}] '.format(horse)+' ........................................... ', end = '')
+					horseGpsX = float(horses['horPos'][0][horse])
+					horseGpsY = float(horses['horPos'][1][horse])
+					horsePixX = int((horseGpsX - xOrigin) / pixelWidth)
+					horsePixY = int((yOrigin - horseGpsY) / pixelHeight)
+					horseImgX = horsePixX - (imagCenPixX - self.img_W//2)
+					horseImgY = horsePixY - (imagCenPixY - self.img_H//2)
+					if (
+						horseImgX < self.img_W
+						and horseImgY < self.img_H
+						and horseImgX > 0
+						and horseImgY > 0
 					):
-						continue
-					crop = img[
-						imagCenPixY - self.img_H//2: imagCenPixY + self.img_H//2,
-						imagCenPixX - self.img_W//2: imagCenPixX + self.img_W//2,
-						0:3
-					]
+						#cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
+						horseFlag[horse] = 1
+						multiHorse.append([horseImgX, horseImgY])
+						imsave(
+							self.Datapath
+							+ "Horse/ProcessedData/InputData/"
+							+ str(imagId)
+							+ ".jpg",
+							crop
+						)
+						np.savez_compressed(
+							self.Datapath
+							+ 'Horse/ProcessedData/gt_Pos/'
+							+ str(imagId),
+							gt_Tag = horses['gt_Tag'][horse],
+							horseCoordinates = multiHorse,
+						)
+			
+					
 
-					horseFlag = np.zeros((len(horses['gt_Tag']), 1), dtype='bool')
 
-					#print('********************| Processing Horses with respect to Center |*******************')
-					for horse in trange(0, len(horses['gt_Tag'])):
-						#print('[{}] '.format(horse)+' ........................................... ', end = '')
-						horseGpsX = float(horses['horPos'][0][horse])
-						horseGpsY = float(horses['horPos'][1][horse])
-						horsePixX = int((horseGpsX - xOrigin) / pixelWidth)
-						horsePixY = int((yOrigin - horseGpsY) / pixelHeight)
-						horseImgX = horsePixX - (imagCenPixX - self.img_W//2)
-						horseImgY = horsePixY - (imagCenPixY - self.img_H//2)
-						if (
-							horseImgX < self.img_W
-							and horseImgY < self.img_H
-							and horseImgX > 0
-							and horseImgY > 0
-						):
-							#cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
-							horseFlag[horse] = 1
-							multiHorse.append([horseImgX, horseImgY])
-							imsave(
-								self.Datapath
-								+ "Horse/ProcessedData/InputData/"
-								+ str(imagId)
-								+ ".jpg",
-								crop
-							)
-							#while(np.count_nonzero(horseFlag)):
-							np.savez_compressed(
-								self.Datapath
-								+ 'Horse/ProcessedData/gt_Pos/'
-								+ str(imagId),
-								horseCoordinates = multiHorse,
-							)
-
-						#print('done')
+					
+			tifs.remove(tif)
 					#print('done')
+				#print('done')
 				#count = count + 1
 				#print('done')
 
-		with open(
-			self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
-		) as outfile:
-			json.dump(exception, outfile)
+
 
 	def loadData(self):
 		for filename in glob.glob(
