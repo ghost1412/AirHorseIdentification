@@ -5,19 +5,24 @@ import xlrd
 import uuid
 import numpy
 import os
+import glob
+import random	
 import pandas as pd
 import numpy as np
 import scipy.linalg
 from tqdm import tqdm, trange
-from skimage.io import imread, imsave
+from keras.callbacks import LearningRateScheduler
+from keras.callbacks import ModelCheckpoint
+#from skimage.io import imread, imsave
 from keras.models import Model
 import xml.etree.ElementTree as ET  
 from keras.utils import plot_model
 import numpy.linalg as linalg
+from keras.optimizers import Adam
 from osgeo import gdal
 from sklearn.model_selection import train_test_split
 from keras.preprocessing.image import ImageDataGenerator
-#from classification_models.resnet import ResNet18, preprocess_input
+from classification_models.resnet import ResNet18, preprocess_input
 from keras.layers import Input, Conv2D, MaxPooling2D, BatchNormalization, Activation, GlobalAveragePooling2D, ZeroPadding2D, Dense, Dropout, Activation
 
 
@@ -214,52 +219,117 @@ class AirBackBone:
 			self.resnet_M.layers[-1].output
 		) 
 		DROP = Dropout(0.5, noise_shape=None, seed=None)(MLP)
-		MLP1 = Conv2D(3, kernel_size=(1, 1), padding='same')(DROP)
-		SMAX = Activation('Softmax')(CNN)
+		MLP1 = Conv2D(2, kernel_size=(1, 1), padding='same')(DROP)
+		SMAX = Activation('softmax')(MLP1)
 		self.model = Model(inputs = self.resnet_M.input, outputs = SMAX)
 		opt = Adam(
-			lr=0.0001, decay=0.5, amsgrad=False, momentum = 0.9
+			lr=0.0001, decay=0.5, amsgrad=False
 		)	#weight decay 0.0001
 		self.model.compile(
 			optimizer='SGD', loss='categorical_crossentropy', metrics=['accuracy']
 		)
 		self.model.summary()
-		
+
+
+	def generate_data(self, directory, batch_size):
+		"""Replaces Keras' native ImageDataGenerator."""
+		i = 0
+		file_list = os.listdir(directory + 'Input')
+		while True:
+			image_batch = []
+			image_mask = []
+			while(len(image_mask)!=batch_size):
+				if i == len(file_list):
+					i = 0
+					random.shuffle(file_list)
+				sample = file_list[i]
+				i += 1
+				x = random.randint(1,2048)
+				y = random.randint(1,2048)
+				try:
+					image = self.partialRanCrop(cv2.imread(directory + 'Input/' + sample), [x, y], 256, 2048, 2048)
+					border = self.partialRanCrop(cv2.imread(directory + 'border_Mask/' + sample[:-3]+sample[-4:], cv2.IMREAD_GRAYSCALE), [x//64, y//64], 16, 128, 128)
+					center = self.partialRanCrop(cv2.imread(directory + 'center_Mask/' + sample[:-3]+sample[-4:], cv2.IMREAD_GRAYSCALE), [x//64, y//64], 16, 128, 128)
+				except:
+					continue
+				image_batch.append(image)
+				image_mask.append([np.array(border), np.array(center)])				
+
+			data_gen_args = dict(featurewise_center=True,
+					     featurewise_std_normalization=True,
+					     rotation_range=90,
+					     width_shift_range=0.1,
+					     height_shift_range=0.1,
+					     zoom_range=0.2)
+			image_datagen = ImageDataGenerator(**data_gen_args)
+			mask_datagen = ImageDataGenerator(**data_gen_args)
+
+			# Provide the same seed and keyword arguments to the fit and flow methods
+			seed = 1
+			'''image_datagen.fit(image_batch, augment=True, seed=seed)
+			mask_datagen.fit(image_mask[0], augment=True, seed=seed)
+			mask_datagen.fit(image_mask[1], augment=True, seed=seed)
+
+			image_generator = image_datagen.flow_from_directory(
+			    '/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/Input/',
+			    class_mode=None,
+			    seed=seed)
+
+			border_mask_generator = mask_datagen.flow_from_directory(
+			    '/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/border_Mask/',
+			    class_mode=None,
+			    seed=seed)
+
+			center_mask_generator = mask_datagen.flow_from_directory(
+			    '/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/center_Mask/',
+			    class_mode=None,
+			    seed=seed)
+
+			# combine generators into one which yields image and masks
+			train_generator = zip(image_generator, [border_mask_generator, center_mask_generator])
+			print(train_generator.shape)'''
+			yield np.array(image_batch), np.reshape(image_mask, (batch_size, 32, 32 ,2))
+
+
 	def fit(self):
 		lrate = LearningRateScheduler(self.step_decay)
-		In, Gt = self.loadData()
-		x_train, x_test, y_train, y_test = train_test_split(In, Gt, test_size=0.33)
-		datagen = ImageDataGenerator(
-				featurewise_center=True,
-				featurewise_std_normalization=True,
-				rotation_range=20,
-				width_shift_range=0.2,
-				height_shift_range=0.2,
-				horizontal_flip=True,
-		)
-		# compute quantities required for featurewise normalization
-		# (std, mean, and principal components if ZCA whitening is applied)
-		datagen.fit(x_train)
+		self.createModel()
+		#In, Gt = self.loadData()
+		batch_size = 32
+		#x_train, x_test, y_train, y_test = train_test_split(In, Gt, test_size=0.33)
+		checkpoint = ModelCheckpoint('checkpoint.hdf5', monitor='val_acc', verbose=1, save_best_only=True, mode='max')
+		self.model.fit_generator(self.generate_data('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/', batch_size), epochs=5, steps_per_epoch=len(os.listdir('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/Input/')) // batch_size, callbacks = [lrate, checkpoint])
 
-		# fits the model on batches with real-time data augmentation:
-		model.fit_generator(
-			datagen.flow(x_train, y_train, batch_size=32), 
-			steps_per_epoch=len(x_train) / 32,
-			epochs=epochs,
-		)
-		history = autoencoder.fit(
-			x_train,
-			x_train,
-			epochs= 400,
-			batch_size=30,
-			shuffle=True,
-			validation_data=(x_test, x_test),
-			callbacks = [lrate],
-		)
+		# here's a more "manual" example
+		'''for e in range(epochs):
+			print('Epoch', e)
+			batches = 0
+			for x_batch, y_batch in datagen.flow(x_train, y_train, batch_size=32):
+				model.fit(x_batch, y_batch, callbacks = [lrate])
+				batches += 1
+				if batches >= len(x_train) / 32:
+					# we need to break the loop by hand because
+					# the generator loops indefinitely
+					break'''
+		self.model.save_weights('detector.hdf5')
+
+	def predict(self):
+		self.createModel()
+		self.model.load_weights('detector.hdf5')
+		count = -1
+		for filename in glob.glob('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/marked/*.jpg'):
+			x = random.randint(1,2048)
+			y = random.randint(1,2048)
+			image = self.partialRanCrop(cv2.imread('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/Input/'+ filename[-40:]), [x, y], 256, 2048, 2048)
+			count += 1
+			pre = self.model.predict(np.reshape(image, (1, 512, 512, 3)))		
+			cv2.imwrite(filename[-40:], np.reshape(pre, (2, 32 ,32))[1])
+			if count == 10:
+				break;		
 
 	def partialRanCrop(self, img, coordinates, windowLen, origW, origH):
-		y = coordinates[0]
-		x = coordinates[1]
+		y = coordinates[1]
+		x = coordinates[0]
 		if origW - x < windowLen:
 			x_R = origW - 1
 			x_L = x - (windowLen + (windowLen - (origW - 1 - x)))
@@ -280,7 +350,7 @@ class AirBackBone:
 			y_U = y - windowLen
 		newX = x - x_L
 		newY = y - y_U
-		return img[y_U: y_D, x_L: x_R, :], [newX, newY]
+		return img[y_U: y_D, x_L: x_R]
 		
 	def processDataFile(self):
 		with open('/home/ghost/savmap_dataset_v2/savmap_annotations_2014.geojson') as f:
@@ -386,7 +456,7 @@ class AirBackBone:
 				self.flightCode = self.flightName[6: 9] + self.flightName[16:18]
 
 		#assert(isRotationMatrix(np.array(R)[0:3,0:3]))
-		#listTif()
+		listTif()
 
 		#with open(
 		#	self.Datapath + 'Horse/ProcessedData/exception.json', 'w'
@@ -395,7 +465,7 @@ class AirBackBone:
 		count = 0
 		prepareGtTags()
 		with open(
-			self.Datapath + 'Horse/ProcessedData/state.json'
+			self.Datapath + 'Horse/ProcessedData/TifData/tif.json'
 		) as f:
 			tifs = json.load(f)
 		count = 0
@@ -483,6 +553,7 @@ class AirBackBone:
 			for center in trange(0, len(root[0][1])):
 				#print('[{}] '.format(center)+'                      ........................................... ', end = '')
 				multiHorse = []
+				multiTag = []
 				imagId = uuid.uuid4()
 				try:
 					if len(root[0][1][center][1].attrib) == 4:
@@ -509,8 +580,8 @@ class AirBackBone:
 						json.dump(exception, outfile)
 					continue
 			
-				imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth)
-				imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight)
+				imagCenPixX = int((imagCenGpsX - xOrigin) / pixelWidth) + random.randint(1,1000)
+				imagCenPixY = int((yOrigin - imagCenGpsY) / pixelHeight) + random.randint(1,1000)
 				#Transformation = (root[0][1][center][0].text)
 				#Transformation = [(float(matrix)) for matrix in Transformation.split()]
 				#Transformation_Inv = np.linalg.inv(np.reshape(np.array(Transformation), (4,4)))
@@ -529,6 +600,11 @@ class AirBackBone:
 					imagCenPixX - self.img_W//2: imagCenPixX + self.img_W//2,
 					0:3
 				]
+				brown_lo=np.array([250,250,250])
+				brown_hi=np.array([255, 255, 255])
+				mask=cv2.inRange(crop,brown_lo, brown_hi)
+				crop[mask>0]=crop[1024,1024, :]
+				marked = crop
 
 				#print('********************| Processing Horses with respect to Center |*******************')
 				for horse in trange(0, len(horses['gt_Tag'])):
@@ -545,24 +621,33 @@ class AirBackBone:
 						and horseImgX > 0
 						and horseImgY > 0
 					):
-						#cv2.circle(crop, (horseImgX, horseImgY), 25, (0,255,0), 3)
+						marked = cv2.circle(marked, (horseImgX, horseImgY), 25, (0,255,0), 3)
 						horseFlag[horse] = 1
 						multiHorse.append([horseImgX, horseImgY])
-						imsave(
-							self.Datapath
-							+ "Horse/ProcessedData/InputData/"
-							+ str(imagId)
-							+ ".jpg",
-							crop
-						)
-						np.savez_compressed(
-							self.Datapath
-							+ 'Horse/ProcessedData/gt_Pos/'
-							+ str(imagId),
-							gt_Tag = horses['gt_Tag'][horse],
-							horseCoordinates = multiHorse,
-						)
-			
+						multiTag.append(horses['gt_Tag'][horse])
+				if(len(multiHorse)==0):			
+					imsave(
+						self.Datapath
+						+ "Horse/ProcessedData/newData/backGroundData/"
+						+ str(imagId)
+						+ ".jpg",
+						crop
+					)
+					'''cv2.imwrite(
+						self.Datapath
+						+ "Horse/ProcessedData/newData/marked/"
+						+ str(imagId)
+						+ ".jpg",
+						marked
+					)
+					np.savez_compressed(
+						self.Datapath
+						+ 'Horse/ProcessedData/newData/gt_Pos/'
+						+ str(imagId),
+						gt_Tag = multiTag,
+						horseCoordinates = multiHorse,
+					)'''
+		
 					
 
 
@@ -572,25 +657,46 @@ class AirBackBone:
 				#print('done')
 				#count = count + 1
 				#print('done')
+	def generateGt(self):
+		#count = 0
 
+		for file in tqdm(glob.glob('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/Input/*.jpg')):
+			im = cv2.imread(file)
+			try:
+				l = np.load('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/gt_Pos/' + file[-40:-3]+'npz')
+			except:
+				continue
+			center = np.full((128, 128), 0)
+			border = np.zeros((128, 128))
+			for i in range(len(l['horseCoordinates'])):
+				center[int(l['horseCoordinates'][i][1]/16)][int(l['horseCoordinates'][i][0]/16)] = 255
+				border[int(l['horseCoordinates'][i][1]/16)-8:int(l['horseCoordinates'][i][1]/16)+8, int(l['horseCoordinates'][i][0]/16) - 8: int(l['horseCoordinates'][i][0]/16)+8] = 255
+				cv2.imwrite('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/border_Mask/'+ file[-40:-3] + '.jpg', border)
+				cv2.imwrite('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/center_Mask/'+ file[-40:-3] + '.jpg', center)
+
+
+						
 
 
 	def loadData(self):
-		for filename in glob.glob(
-			'/media/ghost/DATA/Material/AirHorse Identification/Airbus/processedData/*.jpg'
-		): 
-    			im=Image.open(filename)
-    			image_list.append(im)
+		image_list = []
+		anno = []
+		for filename in tqdm(glob.glob( '/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/Input/*.jpg')):
+			gt = []
+			im = cv2.imread(filename)
+			image_list.append(im)
+			try:
+				gt.append(cv2.imread('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/gt_Masks/'+filename+'border.jpg'))
+				gt.append(cv2.imread('/run/user/1000/gvfs/sftp:host=163.221.84.106,user=ashutosh/mnt/My Files/Public/ashutosh/Horse/ProcessedData/newData/gt_Masks/'+filename+'center.jpg'))
+				anno.append(gt)
+			except:
+				continue
 
-		with open(
-			'/media/ghost/DATA/Material/AirHorse Identification/Airbus/gt.json'
-		) as f:
-			anno = json.load(f)
 		return image_list, anno
 		
 
 		
 a = AirBackBone()
 #a.createModel()
-a.dataProcessor()	
+a.predict()
 #a.resnet_M.summary()
